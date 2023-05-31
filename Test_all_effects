@@ -1,0 +1,163 @@
+#include <AudioHacker.h>
+
+#define DEBUG_ECHO
+#define DEBUG_CRUSHRATE
+
+///////////////////////////////////////////////////////////////////// ECHO DEFS
+unsigned int playbackBufEcho;
+unsigned int sampleRateEcho;
+unsigned int readBufEcho[2];
+unsigned int writeBufEcho;
+boolean evenCycleEcho = true;
+unsigned int timer1StartEcho;
+volatile unsigned int timer1EndEvenEcho;
+volatile unsigned int timer1EndOddEcho;
+unsigned long lastDebugPrintEcho = 0;
+volatile long addressEcho = 0;
+unsigned int echoDelay;
+boolean echoWrappedEcho = false;
+
+////////////////////////////////////////////////////////////////////// CRUSH AND RATE DEFS
+unsigned int playbackBufCrush = 2048;
+unsigned int sampleRateCrush = 22050;
+byte resolutionCrush = 12;
+unsigned int maskCrush;
+unsigned int timer1StartCrush;
+volatile unsigned int timer1EndCrush;
+
+void setup() {
+#ifdef DEBUG_ECHO
+  Serial.begin(115200);        // connect to the serial port
+#endif
+#ifdef DEBUG_CRUSHRATE
+  Serial.begin(115200);        // connect to the serial port
+#endif
+
+  // CRUSH
+  timer1StartCrush = UINT16_MAX - (F_CPU / sampleRateEcho);
+
+  // ECHO
+  playbackBufEcho = 2048;
+  sampleRateEcho = DEFAULT_RECORDING_SAMPLE_RATE;
+  timer1StartEcho = UINT16_MAX - (F_CPU / sampleRateEcho);
+
+  AudioHacker.begin();
+}
+
+////////////////////////////////////////////////////////////////////////////////////7 ECHO LOOP
+
+void loop() {
+
+  delay(300);
+  // echoDelay is number of memory slots back into the past to read for the echo.
+  // must be a factor of 3 because we pack 2 samples into each 3-byte sequence of SRAM.
+  echoDelay = analogRead(0) * 30; 
+
+#ifdef DEBUG
+  if ((millis() - lastDebugPrint) >= 1000) {
+    lastDebugPrint = millis();
+
+    //each 3 echoDelay2 is 2 samples.  
+    unsigned int delayMillis = (float)(((float)((echoDelay * 2) / 3)) / (float)(sampleRateEcho/1000.0));
+
+    Serial.print("echo delay = ");
+    Serial.print(delayMillis);
+    Serial.print(" ms    even cycles remaining = ");
+    Serial.print(UINT16_MAX - timer1EndEvenEcho);
+    Serial.print("   odd cycles remaining = ");
+    Serial.print(UINT16_MAX - timer1EndOddEcho);
+    Serial.println();
+  }
+}
+#endif
+
+
+///////////////////////////////////////////////////////////// DO CRUSH AND RATE
+
+ISR(TIMER1_OVF_vect) {
+
+  // CRUSH AND RATE
+  
+  TCNT1 = timer1StartCrush;
+
+  AudioHacker.writeDAC(playbackBufCrush);
+
+
+  playbackBufEcho = AudioHacker.readADC();
+  playbackBufEcho &= maskCrush;
+
+  // ECHO
+
+  TCNT2 = timer1StartEcho;
+  unsigned int signal;
+  unsigned int echo;
+  int mix;
+
+  AudioHacker.writeDAC(playbackBufEcho);
+
+  // Read ADC
+  signal = AudioHacker.readADC();
+
+
+
+#ifdef DEBUG
+  timer1EndCrush = TCNT1;
+#endif
+
+}
+
+ if (evenCycleEcho) {
+    long echoAddress = addressEcho - echoDelay;
+    if (echoAddress < 0) {
+      echoAddress += MAX_ADDR;
+    }
+    AudioHacker.readSRAMPacked(0, echoAddress, readBufEcho);
+    if ((!echoWrappedEcho) && (echoAddress > addressEcho)) {
+      // avoid reading from unwritten memory
+      echo = 2048;
+      readBufEcho[1] = 2048;
+    } else {
+      echo = readBufEcho[0];
+    }
+  } else {
+    echo = readBufEcho[1];
+  }
+  if (echoDelay == 0) {
+    echo = 2048;
+  }
+
+  if (evenCycleEcho) {
+    writeBufEcho = signal;
+  } else {
+    AudioHacker.writeSRAMPacked(0, addressEcho, writeBufEcho, signal);
+    addressEcho += 3;
+    if (addressEcho > MAX_ADDR) {
+      addressEcho = 0;
+      echoWrappedEcho = true;
+    }
+  }
+
+
+  mix = signal-2048;
+  echo = echo >> 1; // attenuate echo
+  mix += (echo - 1024); // since we are dividing echo by 2, decrement by 1024
+  if (mix < -2048) {
+    mix = -2048;
+  } else {
+    if (mix > 2047) {
+      mix = 2047;
+    }
+  }
+}  playbackBufEcho = mix + 2048;
+
+#ifdef DEBUG_ECHO
+  if (evenCycleEcho) {
+    timer1EndEvenEcho = TCNT2;
+  } else {
+    timer1EndOddEcho = TCNT2;
+  }
+#endif
+  evenCycleEcho = !evenCycleEcho;
+}
+
+
